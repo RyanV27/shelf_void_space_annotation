@@ -96,8 +96,9 @@ The dataset directory must follow this layout:
 | Key | Action |
 |---|---|
 | `S` | Save annotations and advance to the next image |
-| `N` | Skip image — not saved; recorded in `deleted_images.json` |
+| `N` | Skip image — prompts for confirmation; not saved; recorded in `deleted_images.json` |
 | `D` | Delete the currently selected bounding box |
+| `U` | Undo all changes — removes saved output and deleted record, reloads from `labels/` |
 | `Q` | Quit the tool |
 | `A` | Go back to the previous image |
 | `F` | Go forward to the next image |

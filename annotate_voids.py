@@ -5,13 +5,14 @@ Void space bounding box annotation tool.
 Controls
 --------
   S          - Save annotations and move to next image
-  N          - Skip image (do not save, records in deleted_images.json)
+  N          - Skip image (do not save, records in deleted_images.json) — shows confirmation
   D          - Delete the currently selected bounding box
+  U          - Undo all changes (reload from labels/, clear updated_labels and deleted record)
   Q          - Quit
   A          - Go back to previous image
   F          - Go forward to next image
 
-  Drag on empty space          → draw a new void box  (class 1)
+  Drag on empty space          → draw a new void box  (class 0)
   Click on a box               → select it; then drag to move
   Click + drag on a box handle → resize the box
 
@@ -52,12 +53,8 @@ CONTROLS_PANEL_W = 270
 MAX_DISPLAY_W    = 1600 - CONTROLS_PANEL_W
 MAX_DISPLAY_H    = 900
 
-# BGR colours
-CLASS_COLORS = {
-    0: (50, 205,  50),   # green  – object
-    1: (50,  50, 220),   # red    – void
-}
-SEL_COLOR  = (  0, 220, 220)   # cyan – selected box
+VOID_COLOR = (50,  50, 220)    # red – void box
+SEL_COLOR  = ( 0, 220, 220)    # cyan – selected box
 DRAW_COLOR = (255, 140,   0)   # orange – box being drawn
 
 HANDLE_RADIUS = 5
@@ -67,6 +64,7 @@ INSTRUCTIONS = [
     "S : Save & next",
     "N : Skip",
     "D : Delete selected",
+    "U : Undo all changes",
     "Q : Quit",
     "A : Previous image",
     "F : Next image",
@@ -181,6 +179,7 @@ class AnnotationTool:
 
         # Per-image mutable state
         self.boxes: list        = []
+        self._boxes_on_load: list = []   # snapshot of boxes as loaded, for dirty detection
         self.selected_idx: int  = -1
         self.mode: str          = "idle"
         self.drag_start         = None
@@ -213,12 +212,14 @@ class AnnotationTool:
         return [p.stem for p in paths]
 
     def _find_start_index(self) -> int:
-        """Return index of first image not yet annotated or deleted."""
+        """Return index of the image after the last annotated or deleted one."""
         annotated = {p.stem for p in self.updated_dir.glob("*.txt")}
+        processed = annotated | self._deleted
+        last_processed = -1
         for i, stem in enumerate(self.image_list):
-            if stem not in annotated and stem not in self._deleted:
-                return i
-        return len(self.image_list)
+            if stem in processed:
+                last_processed = i
+        return last_processed + 1
 
     def _load_deleted(self) -> set:
         if self.deleted_json.exists():
@@ -323,15 +324,16 @@ class AnnotationTool:
                 boxes.append([
                     int(x1 * sx), int(y1 * sy),
                     int(x2 * sx), int(y2 * sy),
-                    1,
+                    0,
                 ])
         return boxes
 
     def _filter_model_boxes(self, model_boxes: list, existing_boxes: list) -> list:
-        """Discard model boxes that overlap (IoU > 0) with any existing box."""
+        """Discard model boxes that overlap (IoU > 0) with any existing void box."""
+        existing_voids = existing_boxes
         filtered = []
         for mb in model_boxes:
-            overlaps = any(_iou(mb, eb) > 0.0 for eb in existing_boxes)
+            overlaps = any(_iou(mb, eb) > 0.0 for eb in existing_voids)
             if not overlaps:
                 filtered.append(mb)
         return filtered
@@ -341,14 +343,12 @@ class AnnotationTool:
         out  = self.updated_dir / f"{stem}.txt"
         dh, dw = self.display_img.shape[:2]
         lines  = []
-        for x1, y1, x2, y2, cls in self.boxes:
-            if cls != 1:   # only save void boxes
-                continue
+        for x1, y1, x2, y2, _ in self.boxes:
             cx = max(0.0, min(1.0, ((x1 + x2) / 2) / dw))
             cy = max(0.0, min(1.0, ((y1 + y2) / 2) / dh))
             w  = max(0.0, min(1.0, (x2 - x1) / dw))
             h  = max(0.0, min(1.0, (y2 - y1) / dh))
-            lines.append(f"{cls} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+            lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
         out.write_text("\n".join(lines))
         print(f"  Saved → {out}  (voids: {len(lines)})")
 
@@ -381,19 +381,18 @@ class AnnotationTool:
         dh, dw = img.shape[:2]
 
         for i, box in enumerate(self.boxes):
-            x1, y1, x2, y2, cls = box
-            if cls == 0:
-                continue
-            selected = (i == self.selected_idx)
-            color    = SEL_COLOR if selected else CLASS_COLORS.get(cls, (200, 200, 200))
+            x1, y1, x2, y2, _ = box
+            selected  = (i == self.selected_idx)
+            color     = SEL_COLOR if selected else VOID_COLOR
+            label_txt = "Void"
 
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
 
-            (tw, th), _ = cv2.getTextSize("Void", cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             lx = x1
             ly = max(y1 - 3, th + 4)
             cv2.rectangle(img, (lx - 1, ly - th - 2), (lx + tw + 2, ly + 2), color, -1)
-            cv2.putText(img, "Void", (lx, ly),
+            cv2.putText(img, label_txt, (lx, ly),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
 
             if selected:
@@ -407,7 +406,7 @@ class AnnotationTool:
             cv2.putText(img, "New void", (x1, max(y1 - 5, 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, DRAW_COLOR, 1, cv2.LINE_AA)
 
-        n_void   = sum(1 for b in self.boxes if b[4] == 1)
+        n_void   = len(self.boxes)
         sel_info = f"#{self.selected_idx}" if self.selected_idx >= 0 else "none"
         deleted_tag = "  [SKIPPED]" if stem in self._deleted else ""
         status = (f"  {stem}{deleted_tag}"
@@ -489,7 +488,7 @@ class AnnotationTool:
             if self.mode == "drawing" and self.drawing_box is not None:
                 x1, y1, x2, y2 = self.drawing_box
                 if (x2 - x1) >= 5 and (y2 - y1) >= 5:
-                    self.boxes.append([x1, y1, x2, y2, 1])
+                    self.boxes.append([x1, y1, x2, y2, 0])
                     self.selected_idx = len(self.boxes) - 1
 
             self.mode        = "idle"
@@ -553,11 +552,192 @@ class AnnotationTool:
                       f"added after overlap filter: {len(filtered)}")
 
         # Reset interaction state
+        self.selected_idx   = -1
+        self.mode           = "idle"
+        self.drawing_box    = None
+        self.drag_start     = None
+        self._boxes_on_load = [b[:] for b in self.boxes]
+        return True
+
+    # -------------------------------------------------------------------------
+    # Skip confirmation popup
+    # -------------------------------------------------------------------------
+
+    def _confirm_skip(self) -> bool:
+        """Show a Yes/No popup. Returns True if the user confirms the skip."""
+        WIN = "Skip?"
+        BTN_W, BTN_H = 100, 36
+        PAD          = 20
+        MSG          = "Skip this image?"
+        FONT         = cv2.FONT_HERSHEY_SIMPLEX
+
+        (tw, th), _ = cv2.getTextSize(MSG, FONT, 0.6, 1)
+        panel_w = max(tw + PAD * 2, BTN_W * 2 + PAD * 3)
+        panel_h = th + PAD * 3 + BTN_H
+
+        # Button rects: (x1, y1, x2, y2)
+        yes_x1 = PAD
+        no_x1  = PAD * 2 + BTN_W
+        btn_y1 = th + PAD * 2
+        btn_y2 = btn_y1 + BTN_H
+        yes_rect = (yes_x1, btn_y1, yes_x1 + BTN_W, btn_y2)
+        no_rect  = (no_x1,  btn_y1, no_x1  + BTN_W, btn_y2)
+
+        result = [None]   # mutable container for callback
+
+        def _draw(hover: str | None = None):
+            panel = np.full((panel_h, panel_w, 3), 45, dtype="uint8")
+            cv2.rectangle(panel, (0, 0), (panel_w - 1, panel_h - 1), (100, 100, 100), 1)
+            cv2.putText(panel, MSG,
+                        (PAD, PAD + th),
+                        FONT, 0.6, (230, 230, 230), 1, cv2.LINE_AA)
+            # Yes button
+            yes_col = (60, 180, 60) if hover == "yes" else (40, 140, 40)
+            cv2.rectangle(panel, (yes_rect[0], yes_rect[1]),
+                          (yes_rect[2], yes_rect[3]), yes_col, -1)
+            cv2.putText(panel, "Yes",
+                        (yes_rect[0] + 28, yes_rect[1] + 24),
+                        FONT, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            # No button
+            no_col = (60, 60, 180) if hover == "no" else (40, 40, 140)
+            cv2.rectangle(panel, (no_rect[0], no_rect[1]),
+                          (no_rect[2], no_rect[3]), no_col, -1)
+            cv2.putText(panel, "No",
+                        (no_rect[0] + 30, no_rect[1] + 24),
+                        FONT, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow(WIN, panel)
+
+        def _mouse_cb(event, x, y, _flags, _param):
+            in_yes = (yes_rect[0] <= x <= yes_rect[2] and yes_rect[1] <= y <= yes_rect[3])
+            in_no  = (no_rect[0]  <= x <= no_rect[2]  and no_rect[1]  <= y <= no_rect[3])
+            hover  = "yes" if in_yes else ("no" if in_no else None)
+            if event == cv2.EVENT_MOUSEMOVE:
+                _draw(hover)
+            elif event == cv2.EVENT_LBUTTONDOWN:
+                if in_yes:
+                    result[0] = True
+                elif in_no:
+                    result[0] = False
+
+        cv2.namedWindow(WIN, cv2.WINDOW_AUTOSIZE)
+        cv2.setMouseCallback(WIN, _mouse_cb)
+        _draw()
+
+        while result[0] is None:
+            key = cv2.waitKey(20) & 0xFF
+            if key in (ord("y"), ord("Y")):
+                result[0] = True
+            elif key in (ord("n"), ord("N"), 27):   # N or Escape = No
+                result[0] = False
+            try:
+                if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1:
+                    result[0] = False
+            except cv2.error:
+                result[0] = False
+
+        cv2.destroyWindow(WIN)
+        return result[0]
+
+    def _has_unsaved_changes(self) -> bool:
+        """Return True if self.boxes differs from the snapshot taken at load time."""
+        if len(self.boxes) != len(self._boxes_on_load):
+            return True
+        return any(a != b for a, b in zip(self.boxes, self._boxes_on_load))
+
+    def _confirm_unsaved(self) -> str:
+        """Popup: 'You have unsaved changes. Would you like to save them?'
+        Returns 'save', 'discard', or 'cancel' (window closed)."""
+        WIN   = "Unsaved Changes"
+        BTN_W, BTN_H = 110, 36
+        PAD           = 20
+        MSG           = "You have unsaved changes."
+        MSG2          = "Would you like to save them?"
+        FONT          = cv2.FONT_HERSHEY_SIMPLEX
+
+        (tw,  th),  _ = cv2.getTextSize(MSG,  FONT, 0.55, 1)
+        (tw2, th2), _ = cv2.getTextSize(MSG2, FONT, 0.55, 1)
+        panel_w = max(max(tw, tw2) + PAD * 2, BTN_W * 2 + PAD * 3)
+        panel_h = th + th2 + PAD * 4 + BTN_H
+
+        yes_x1 = PAD
+        no_x1  = PAD * 2 + BTN_W
+        btn_y1 = th + th2 + PAD * 3
+        btn_y2 = btn_y1 + BTN_H
+        yes_rect = (yes_x1, btn_y1, yes_x1 + BTN_W, btn_y2)
+        no_rect  = (no_x1,  btn_y1, no_x1  + BTN_W, btn_y2)
+
+        result = [None]
+
+        def _draw(hover: str | None = None):
+            panel = np.full((panel_h, panel_w, 3), 45, dtype="uint8")
+            cv2.rectangle(panel, (0, 0), (panel_w - 1, panel_h - 1), (100, 100, 100), 1)
+            cv2.putText(panel, MSG,  (PAD, PAD + th),
+                        FONT, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
+            cv2.putText(panel, MSG2, (PAD, PAD * 2 + th + th2),
+                        FONT, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
+            yes_col = (60, 180, 60) if hover == "yes" else (40, 140, 40)
+            cv2.rectangle(panel, yes_rect[:2], yes_rect[2:], yes_col, -1)
+            cv2.putText(panel, "Save",
+                        (yes_rect[0] + 18, yes_rect[1] + 24),
+                        FONT, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            no_col = (60, 60, 180) if hover == "no" else (40, 40, 140)
+            cv2.rectangle(panel, no_rect[:2], no_rect[2:], no_col, -1)
+            cv2.putText(panel, "Discard",
+                        (no_rect[0] + 10, no_rect[1] + 24),
+                        FONT, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow(WIN, panel)
+
+        def _mouse_cb(event, x, y, _flags, _param):
+            in_yes = (yes_rect[0] <= x <= yes_rect[2] and yes_rect[1] <= y <= yes_rect[3])
+            in_no  = (no_rect[0]  <= x <= no_rect[2]  and no_rect[1]  <= y <= no_rect[3])
+            hover  = "yes" if in_yes else ("no" if in_no else None)
+            if event == cv2.EVENT_MOUSEMOVE:
+                _draw(hover)
+            elif event == cv2.EVENT_LBUTTONDOWN:
+                if in_yes:
+                    result[0] = "save"
+                elif in_no:
+                    result[0] = "discard"
+
+        cv2.namedWindow(WIN, cv2.WINDOW_AUTOSIZE)
+        cv2.setMouseCallback(WIN, _mouse_cb)
+        _draw()
+
+        while result[0] is None:
+            key = cv2.waitKey(20) & 0xFF
+            if key in (ord("s"), ord("S")):
+                result[0] = "save"
+            elif key in (ord("d"), ord("D"), 27):   # D or Escape = Discard
+                result[0] = "discard"
+            try:
+                if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1:
+                    result[0] = "cancel"
+            except cv2.error:
+                result[0] = "cancel"
+
+        cv2.destroyWindow(WIN)
+        return result[0]
+
+    # -------------------------------------------------------------------------
+    # Undo all changes for current image
+    # -------------------------------------------------------------------------
+
+    def _undo_changes(self, stem: str):
+        """Delete updated_labels file and deleted record; reload boxes from labels/."""
+        out_file = self.updated_dir / f"{stem}.txt"
+        if out_file.exists():
+            out_file.unlink()
+            print(f"  Undo: removed {out_file}")
+        if stem in self._deleted:
+            self._deleted.discard(stem)
+            self._save_deleted()
+            print(f"  Undo: removed '{stem}' from deleted_images.json")
+        self.boxes = self._load_labels_from(self.labels_dir, stem)
+        self._boxes_on_load = [b[:] for b in self.boxes]
         self.selected_idx = -1
         self.mode         = "idle"
         self.drawing_box  = None
-        self.drag_start   = None
-        return True
+        print(f"  Undo: reloaded {len(self.boxes)} box(es) from labels/")
 
     # -------------------------------------------------------------------------
     # Main loop
@@ -608,7 +788,7 @@ class AnnotationTool:
 
             self._draw_frame(stem, idx)
 
-            action = None   # "save" | "skip" | "back" | "forward" | "quit"
+            action = None   # "save" | "save_and_forward" | "save_and_back" | "skip" | "back" | "forward" | "quit"
 
             while action is None:
                 # Use waitKeyEx to get the full key code (needed for arrow keys on Windows)
@@ -618,22 +798,40 @@ class AnnotationTool:
                 if key_low in (ord("s"), ord("S")):
                     action = "save"
                 elif key_low in (ord("n"), ord("N")):
-                    action = "skip"
+                    if self._confirm_skip():
+                        action = "skip"
+                    else:
+                        self._draw_frame(stem, idx)
                 elif key_low in (ord("q"), ord("Q")):
                     action = "quit"
                 elif key_low in (ord("d"), ord("D")):
                     if self.selected_idx >= 0:
-                        removed = self.boxes.pop(self.selected_idx)
-                        cls_name = "void" if removed[4] == 1 else "object"
-                        print(f"  Deleted {cls_name} box #{self.selected_idx}")
+                        self.boxes.pop(self.selected_idx)
+                        print(f"  Deleted void box #{self.selected_idx}")
                         self.selected_idx = -1
                         self._draw_frame(stem, idx)
+                elif key_low in (ord("u"), ord("U")):
+                    self._undo_changes(stem)
+                    self._draw_frame(stem, idx)
                 elif key_low in (ord("a"), ord("A")):
-                    action = "back"
+                    if self._has_unsaved_changes():
+                        choice = self._confirm_unsaved()
+                        if choice == "save":
+                            action = "save_and_back"
+                        elif choice == "discard":
+                            action = "back"
+                        # "cancel": do nothing, stay on image
+                    else:
+                        action = "back"
                 elif key_low in (ord("f"), ord("F")):
-                    # Only allow forward navigation if the current image has been
-                    # saved (updated_labels file exists) or skipped (in deleted list)
-                    if (self.updated_dir / f"{stem}.txt").exists() or stem in self._deleted:
+                    if self._has_unsaved_changes():
+                        choice = self._confirm_unsaved()
+                        if choice == "save":
+                            action = "save_and_forward"
+                        elif choice == "discard":
+                            action = "forward"
+                        # "cancel": do nothing, stay on image
+                    elif (self.updated_dir / f"{stem}.txt").exists() or stem in self._deleted:
                         action = "forward"
                     else:
                         print("  Save (S) or skip (N) this image before moving forward.")
@@ -653,11 +851,10 @@ class AnnotationTool:
                 cv2.destroyAllWindows()
                 return
 
-            elif action == "save":
-                void_count = sum(1 for b in self.boxes if b[4] == 1)
+            elif action in ("save", "save_and_forward", "save_and_back"):
+                void_count = len(self.boxes)
                 if void_count == 0:
                     print("  No void boxes — treating as skipped.")
-                    # Remove from updated_labels if it was previously saved
                     out_file = self.updated_dir / f"{stem}.txt"
                     if out_file.exists():
                         out_file.unlink()
@@ -665,11 +862,16 @@ class AnnotationTool:
                     self._save_deleted()
                 else:
                     self._save_labels(stem)
-                    # Remove from deleted list if it was there
                     self._deleted.discard(stem)
                     self._save_deleted()
-                idx += 1
-                going_backward = False
+                self._boxes_on_load = [b[:] for b in self.boxes]
+                if action == "save_and_back":
+                    if idx > 0:
+                        idx -= 1
+                        going_backward = True
+                else:
+                    idx += 1
+                    going_backward = False
 
             elif action == "skip":
                 print(f"  Skipped → added to deleted_images.json")
