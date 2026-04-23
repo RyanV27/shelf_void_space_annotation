@@ -10,7 +10,7 @@ An interactive tool for annotating void-space bounding boxes on shelf images. It
 |---|---|
 | Dataset (Google Drive) | [Download Dataset](https://drive.google.com/drive/folders/1BrUxUWkn3lsdlrFf_hXRakTkdXfv5VNB?usp=drive_link) |
 | Model Checkpoint (Google Drive) | [Download best.pt](https://drive.google.com/file/d/14bS0TYOcV5JdkY19yf5A7rGUuPvl9AvR/view?usp=sharing) |
-| Annotation Rules | [View Doc](<ANNOTATION_RULES_LINK>) |
+| Annotation Rules | [View Doc](https://docs.google.com/document/d/1NND9Bcm-7KUz27gLJvOZ_wrKg5lbQCEO96ChpEbMtMw/edit?usp=sharing) |
 
 > Download the dataset and checkpoint, then place them at the paths you will pass to `--dataset` and `--model`. Review the annotation rules document before starting.
 
