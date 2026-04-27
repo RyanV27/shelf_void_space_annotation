@@ -8,11 +8,12 @@ An interactive tool for annotating void-space bounding boxes on shelf images. It
 
 | Resource | Link |
 |---|---|
-| Dataset (Google Drive) | [Download Dataset](https://drive.google.com/drive/folders/1BrUxUWkn3lsdlrFf_hXRakTkdXfv5VNB?usp=drive_link) |
-| Model Checkpoint (Google Drive) | [Download best.pt](https://drive.google.com/file/d/14bS0TYOcV5JdkY19yf5A7rGUuPvl9AvR/view?usp=sharing) |
+| Dataset | Look for 'driverai-void-detection' S3 bucket in Driver AI AWS Workspace |
+| Model Checkpoint | [Download best.pt](https://drive.google.com/file/d/14bS0TYOcV5JdkY19yf5A7rGUuPvl9AvR/view?usp=sharing) |
 | Annotation Rules | [View Doc](https://docs.google.com/document/d/1NND9Bcm-7KUz27gLJvOZ_wrKg5lbQCEO96ChpEbMtMw/edit?usp=sharing) |
+| Results | [Store your results here](https://drive.google.com/drive/folders/1BrUxUWkn3lsdlrFf_hXRakTkdXfv5VNB?usp=sharing) |
 
-> Download the dataset and checkpoint, then place them at the paths you will pass to `--dataset` and `--model`. Review the annotation rules document before starting.
+> Download the dataset and checkpoint, then place them at the paths you will pass to `--dataset` and `--model`. Review the annotation rules document before starting. After correcting annotations for all images, store your `updated_labels/` directory and `deleted_images.json` in the Results drive link.
 
 ---
 
@@ -51,7 +52,7 @@ pip install -r requirements.txt
 ### Usage
 
 ```
-python annotate_voids.py --dataset <path> --model <path> [--conf CONF] [--iou IOU] [--scale SCALE]
+python annotate_voids.py --dataset <path> --model <path> [--conf CONF] [--iou IOU] [--scale SCALE] [--show-labels]
 ```
 
 ### Arguments
@@ -63,11 +64,12 @@ python annotate_voids.py --dataset <path> --model <path> [--conf CONF] [--iou IO
 | `--conf` | `0.25` | Minimum detection confidence for the YOLO model |
 | `--iou` | `0.45` | NMS IoU threshold for the YOLO model |
 | `--scale` | `1.0` | Display window scale relative to fit-to-screen |
+| `--show-labels` | off | Show the class name above each bounding box |
 
 ### Example
 
 ```bash
-python annotate_voids.py --dataset "./path/to/dataset" --model "./path/to/model/checkpoint/best.pt"
+python annotate_voids.py --dataset "./path/to/dataset" --model "./path/to/model/checkpoint/best.pt" --scale 1.3
 ```
 
 ---
@@ -98,6 +100,7 @@ The dataset directory must follow this layout:
 | `S` | Save annotations and advance to the next image |
 | `N` | Skip image — prompts for confirmation; not saved; recorded in `deleted_images.json` |
 | `D` | Delete the currently selected bounding box |
+| `C` | Copy the selected bounding box and place the copy beside it |
 | `U` | Undo all changes — removes saved output and deleted record, reloads from `labels/` |
 | `Q` | Quit the tool |
 | `A` | Go back to the previous image |

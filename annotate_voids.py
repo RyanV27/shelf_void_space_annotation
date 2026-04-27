@@ -7,6 +7,7 @@ Controls
   S          - Save annotations and move to next image
   N          - Skip image (do not save, records in deleted_images.json) — shows confirmation
   D          - Delete the currently selected bounding box
+  C          - Copy the selected bounding box (places copy beside the original)
   U          - Undo all changes (reload from labels/, clear updated_labels and deleted record)
   Q          - Quit
   A          - Go back to previous image
@@ -64,6 +65,7 @@ INSTRUCTIONS = [
     "S : Save & next",
     "N : Skip",
     "D : Delete selected",
+    "C : Copy selected box",
     "U : Undo all changes",
     "Q : Quit",
     "A : Previous image",
@@ -153,11 +155,13 @@ class AnnotationTool:
     """Interactive YOLO bounding-box annotation with automatic void detection."""
 
     def __init__(self, dataset_root: str, model_path: str,
-                 conf: float, iou: float, img_scale: float | None = None):
+                 conf: float, iou: float, img_scale: float | None = None,
+                 show_labels: bool = False):
         self.dataset_root  = Path(dataset_root)
         self.conf          = conf
         self.iou_thresh    = iou
         self.img_scale     = img_scale
+        self.show_labels   = show_labels
 
         print("Loading YOLOv8 model …")
         from ultralytics import YOLO          # noqa: PLC0415
@@ -384,16 +388,17 @@ class AnnotationTool:
             x1, y1, x2, y2, _ = box
             selected  = (i == self.selected_idx)
             color     = SEL_COLOR if selected else VOID_COLOR
-            label_txt = "Void"
 
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
 
-            (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            lx = x1
-            ly = max(y1 - 3, th + 4)
-            cv2.rectangle(img, (lx - 1, ly - th - 2), (lx + tw + 2, ly + 2), color, -1)
-            cv2.putText(img, label_txt, (lx, ly),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+            if self.show_labels:
+                label_txt = "Void"
+                (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                lx = x1
+                ly = max(y1 - 3, th + 4)
+                cv2.rectangle(img, (lx - 1, ly - th - 2), (lx + tw + 2, ly + 2), color, -1)
+                cv2.putText(img, label_txt, (lx, ly),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
 
             if selected:
                 for hx, hy in self._get_handles(box).values():
@@ -810,6 +815,21 @@ class AnnotationTool:
                         print(f"  Deleted void box #{self.selected_idx}")
                         self.selected_idx = -1
                         self._draw_frame(stem, idx)
+                elif key_low in (ord("c"), ord("C")):
+                    if self.selected_idx >= 0:
+                        src = self.boxes[self.selected_idx]
+                        x1, y1, x2, y2, cls = src
+                        bw = x2 - x1
+                        img_w = self.display_img.shape[1]
+                        # Place copy to the right; if it doesn't fit, place to the left
+                        if x2 + bw <= img_w - 1:
+                            nx1, nx2 = x2, x2 + bw
+                        else:
+                            nx1, nx2 = max(0, x1 - bw), x1
+                        self.boxes.append([nx1, y1, nx2, y2, cls])
+                        self.selected_idx = len(self.boxes) - 1
+                        print(f"  Copied void box → #{self.selected_idx}")
+                        self._draw_frame(stem, idx)
                 elif key_low in (ord("u"), ord("U")):
                     self._undo_changes(stem)
                     self._draw_frame(stem, idx)
@@ -920,6 +940,8 @@ def main():
                     help="NMS IoU threshold (default: 0.45)")
     ap.add_argument("--scale",   type=float, default=1.0,
                     help="Scale relative to fit-to-screen (default: 0.9)")
+    ap.add_argument("--show-labels", action="store_true", default=False,
+                    help="Show class name above each bounding box (default: off)")
     args = ap.parse_args()
 
     if not args.dataset:
@@ -933,6 +955,7 @@ def main():
         conf         = args.conf,
         iou          = args.iou,
         img_scale    = args.scale,
+        show_labels  = args.show_labels,
     ).run()
 
 
